@@ -1,0 +1,12 @@
+#!/usr/bin/env bun
+// Test shim: records `pair` invocations (argv + stdin) as JSON lines to $PAIR_SHIM_LOG.
+// appendFileSync (O_APPEND): bridges fire several spawns concurrently and Bun.write's
+// append mode clobbers under concurrency (verified: 6 writers -> 1 line).
+import { appendFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+let stdin = "";
+try {
+  stdin = await Bun.stdin.text();
+} catch {}
+appendFileSync(process.env.PAIR_SHIM_LOG ?? "/tmp/pair-shim.jsonl", JSON.stringify({ args, stdin }) + "\n");
