@@ -99,3 +99,6 @@ bun test/smoke.ts
 Drives both bridges against a PATH-shimmed `pair` (records argv + stdin, atomic
 appends) and asserts the event mapping, default badge labels, and all three gates
 (nested omp, non-PaiR terminal, kill switch).
+
+Live-verification results, open issues, and the QA manual plan:
+[`docs/2026-10-27-handoff-verification.md`](docs/2026-10-27-handoff-verification.md).
