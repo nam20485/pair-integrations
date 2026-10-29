@@ -41,7 +41,7 @@ on `session.tool.input.started` (`data.name` + `data.id`) and the **args** on
 |---|---|
 | `session.execution.started` | `agent_start` toast |
 | `session.execution.succeeded` / `failed` / `interrupted` | `agent_stop` toast |
-| `permission.asked` | `permission` toast (`data.title`) |
+| `permission.asked` | `permission` toast (label from `data.action` + `data.resources`; `data.title` fallback) |
 | `session.tool.input.started` + `session.tool.called` (joined) | `PreToolUse` → `claude:tool_start` |
 | `session.tool.success` / `session.tool.failed` | `PostToolUse` |
 
@@ -56,6 +56,7 @@ herdr-managed extension beside it is the other in-tree consumer):
 | `agent_end` (unless `willContinue`) | `agent_stop` toast |
 | `tool_approval_requested` | `permission` toast |
 | `tool_execution_start` / `tool_execution_end` | `PreToolUse` / `PostToolUse` |
+| `session_shutdown` / `session_switch` (mid-turn) | `agent_stop` toast (corrects a badge stuck on working) |
 
 ## Gates and knobs
 
@@ -64,7 +65,10 @@ herdr-managed extension beside it is the other in-tree consumer):
   owns the PaiR identity (same rule as herdr's own omp integration).
 - `PAIR_NOTIFY=0` — kill switch. **Set this for services**: anything that spawns
   opencode non-interactively under a PaiR terminal (e.g. an orchestrator host) would
-  funnel every dispatched session's tool calls into one session's activity feed.
+  funnel every dispatched session's tool calls into one session's activity feed. The
+  fix belongs at the spawner: `swarm-orchestration-service` should set `PAIR_NOTIFY=0`
+  in the child env at its `spawn_agent_process` seam — see
+  [`docs/2026-10-27-handoff-report-and-implementation-plan.md`](docs/2026-10-27-handoff-report-and-implementation-plan.md) (I1).
 - `PAIR_AI_NAME` — badge label shown in PaiR; must be one of the closed set
   `claude, cursor, codex, gemini, vibe`. Defaults: opencode → `codex`, OMP → `gemini`.
 
@@ -78,6 +82,10 @@ herdr-managed extension beside it is the other in-tree consumer):
 - The opencode bus does not carry the tool name on `session.tool.called`; if
   `session.tool.input.started` was missed the Pre/PostToolUse payload falls back to
   `tool_name: "tool"`.
+- `PreToolUse`/`tool_start` is emitted when a tool is **attempted**, before any permission
+  ask resolves; a rejected ask therefore leaves a `tool_start` with no matching `tool_end`.
+  This mirrors Claude Code / OMP semantics (feed shows intent). See
+  [`docs/2026-10-27-handoff-report-and-implementation-plan.md`](docs/2026-10-27-handoff-report-and-implementation-plan.md) (I7).
 
 ## Install
 
@@ -98,7 +106,30 @@ bun test/smoke.ts
 
 Drives both bridges against a PATH-shimmed `pair` (records argv + stdin, atomic
 appends) and asserts the event mapping, default badge labels, and all three gates
-(nested omp, non-PaiR terminal, kill switch).
+(nested omp, non-PaiR terminal, kill switch). It also covers the handoff fixes:
+OMP `session_shutdown`/`session_switch` → `agent_stop` (I2), the opencode permission
+label from `action` + `resources` with a `title` fallback (I5), and the per-turn `tools`
+Map clear (I6).
+
+### Upgrade probe (pai-r)
+
+The smoke suite uses a shim and never calls the real `pair`, so a pai-r upgrade that
+changes the `notify` contract won't fail it. After any pai-r upgrade, run this probe once
+against the live CLI (app running, `~/.pair/pair.sock` present) — all five must ack
+`{"ok":true}` and exit 0:
+
+```bash
+pair notify -t agent_start --ai-name gemini -m 'probe' --json
+pair notify -t agent_stop  --ai-name gemini -m 'probe' --json
+pair notify -t permission  --ai-name gemini -m 'probe' --json
+echo '{"hook_event_name":"PreToolUse","tool_name":"bash","tool_input":{"command":"true"},"cwd":"/tmp"}' \
+  | pair notify --hook PreToolUse --ai-name gemini --json
+echo '{"hook_event_name":"PostToolUse","tool_name":"bash","tool_input":{"command":"true"},"cwd":"/tmp"}' \
+  | pair notify --hook PostToolUse --ai-name gemini --json
+```
+
+If any shape stops acking, the event-mapping tables above and the `--ai-name` closed set
+need updating (see I4 in the handoff report).
 
 Live-verification results, open issues, and the QA manual plan:
 [`docs/2026-10-27-handoff-verification.md`](docs/2026-10-27-handoff-verification.md).
