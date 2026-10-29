@@ -10,7 +10,9 @@
 // same pattern as the paseo-terminal-activity.js plugin shipping beside this file).
 // Bus payloads live in event.data; the tool NAME only arrives on
 // session.tool.input.started (data.name + data.id) and the ARGS on session.tool.called
-// (data.input + data.id) — joined here by tool-call id.
+// (data.input + data.id) — joined here by tool-call id. The permission label is built
+// from data.action + data.resources (the live permission.asked payload carries no
+// data.title; see I5 in docs/2026-10-27-handoff-report-and-implementation-plan.md).
 import { spawn } from "node:child_process";
 
 interface BusEvent {
@@ -31,6 +33,23 @@ const LIFECYCLE: Record<string, string> = {
 };
 
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+
+const truncate = (value: string, max: number): string =>
+  value.length > max ? `${value.slice(0, max)}…` : value;
+
+// permission.asked in opencode 2.1.4 carries { id, sessionID, action, resources, save, source }
+// and NO data.title (verified live). Build the label from action + resources so the toast is
+// specific (e.g. "shell: echo perm-probe") instead of always degrading to "tool"; keep title
+// first as a forward-compat fallback in case a future build adds it (see report I5).
+function permissionLabel(data: Record<string, unknown> | undefined): string {
+  const title = str(data?.title);
+  if (title) return title;
+  const action = str(data?.action);
+  const resources = Array.isArray(data?.resources) ? data.resources : [];
+  const detail = resources.map((r) => (typeof r === "string" ? r : JSON.stringify(r))).join(", ");
+  if (!action) return detail ? truncate(detail, 100) : "tool";
+  return detail ? `${action}: ${truncate(detail, 100)}` : action;
+}
 
 function pair(args: string[], stdin?: string): void {
   const child = spawn("pair", args, stdin ? { stdio: ["pipe", "ignore", "ignore"] } : { stdio: "ignore" });
@@ -53,6 +72,9 @@ export default {
 
         const lifecycle = LIFECYCLE[event.type];
         if (lifecycle) {
+          // A fresh turn means any tool ids left over from the previous turn are dead —
+          // drop them so a tool that never reached a terminal event can't leak (report I6).
+          if (event.type === "session.execution.started") tools.clear();
           pair(["notify", "-t", lifecycle, "--ai-name", aiName,
             "-m", `opencode: ${lifecycle === "agent_start" ? "working" : "idle"}`]);
           continue;
@@ -95,9 +117,8 @@ export default {
         }
 
         if (event.type === "permission.asked") {
-          const title = str(data?.title);
           pair(["notify", "-t", "permission", "--ai-name", aiName,
-            "-m", `opencode permission: ${title ?? "tool"}`]);
+            "-m", `opencode permission: ${permissionLabel(data)}`]);
         }
       }
     })().catch(() => {});

@@ -45,13 +45,35 @@ function hookJson(event: string, toolName: unknown, toolArgs: unknown): string {
 export default function (pi: Pi): void {
   if (!enabled) return;
 
+  // Tracks whether a turn is in flight so the shutdown/switch handlers only fire an
+  // agent_stop when the badge could actually be stuck on "working" (report I2). Mirrors
+  // the herdr consumer's `agentActive` guard; OMP can emit duplicate/late agent_end.
+  let turnActive = false;
+  const idle = () => pair(["notify", "-t", "agent_stop", "--ai-name", aiName, "-m", "omp: idle"]);
+
   pi.on("agent_start", () => {
+    turnActive = true;
     pair(["notify", "-t", "agent_start", "--ai-name", aiName, "-m", "omp: working"]);
   });
 
   pi.on("agent_end", (event) => {
     if (props(event).willContinue === true) return; // continuation already scheduled, not a settle
-    pair(["notify", "-t", "agent_stop", "--ai-name", aiName, "-m", "omp: idle"]);
+    turnActive = false;
+    idle();
+  });
+
+  // If omp dies or the session switches mid-turn, no agent_end arrives and the PaiR badge
+  // would stick on "working". Emit the same idle toast to correct it (report I2). Gated on
+  // turnActive so an already-idle session doesn't emit a redundant agent_stop.
+  pi.on("session_shutdown", () => {
+    if (!turnActive) return;
+    turnActive = false;
+    idle();
+  });
+  pi.on("session_switch", () => {
+    if (!turnActive) return;
+    turnActive = false;
+    idle();
   });
 
   pi.on("tool_approval_requested", (event) => {
